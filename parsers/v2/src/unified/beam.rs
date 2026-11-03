@@ -66,7 +66,6 @@ use crate::unified::{
     ArgumentFraming, GuidedChannel, GuidedChannelState, GuidedRouted, MalformedToolCallPolicy,
     ScannerUnified, ToolCallPolicy, UnifiedParser,
 };
-use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 
 const START: &str = "<|start|>";
@@ -435,7 +434,8 @@ impl BeamBoundary {
 struct OpenCall {
     tool_index: usize,
     /// The recipient's typed `properties`, resolved once per call.
-    properties: Option<Map<String, Value>>,
+    properties:
+        Option<std::collections::BTreeMap<String, crate::tool_calling::beam_body::ParameterSchema>>,
     json_keys: JsonKeys,
     /// JSON text already handed to the sink.
     emitted: String,

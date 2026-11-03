@@ -695,7 +695,7 @@ fn convert_scalar_value(raw: &str, schema: Option<&Value>, root_schema: &Value) 
     }
 
     if (schemas.has_type(Some(schema), "string")
-        && !schemas.rejects_string_literal(schema, raw)
+        && !schemas.rejects_string_literal(schema, raw, true)
         && (schemas.type_constraint(schema, "string", false) == Some(true)
             || !["integer", "number", "boolean", "object", "array"]
                 .iter()
@@ -710,6 +710,7 @@ fn convert_scalar_value(raw: &str, schema: Option<&Value>, root_schema: &Value) 
         return parsed;
     }
     if schemas.has_type(Some(schema), "number")
+        && (schemas.has_type(Some(schema), "integer") || coerce_integral_number(trimmed).is_none())
         && let Some(number) = coerce_integral_number(trimmed)
             .or_else(|| raw_number_literal(trimmed))
             .or_else(|| normalize_decimal_spelling(trimmed))

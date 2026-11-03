@@ -668,6 +668,8 @@ def _validate_capture_provenance(
     if status not in CAPTURE_PROVENANCE_STATUSES:
         raise ValueError(f"invalid capture provenance status in {path}: {status!r}")
 
+    if "+source." in runtime_version and status != "captured":
+        raise ValueError(f"qualified capture identity requires captured origin: {path}")
     if status == "captured":
         _require_keys(provenance, {"status", "origin"}, {"status", "origin"}, f"{path}.provenance")
         _validate_source_origin(provenance["origin"], f"{path}.provenance.origin", runtime_version)
@@ -2664,7 +2666,7 @@ def _add_bound_legacy_cases(
             len(stimulus.keys() & {"ref", "inline"}) != 1
             or not isinstance(stimulus.get("semantic_sha256"), str)
             or not stimulus["semantic_sha256"]
-            or (origin is not None and origin.get("crate_version") != capture["runtime_version"])
+            or (origin is not None and origin.get("crate_version") != provenance_release_version(capture["runtime_version"]))
         ):
             return False
 
@@ -3047,7 +3049,7 @@ def _update_from_loose(
                         if (
                             captured_with.get(implementation) != runtime_version
                             and isinstance(origin, dict)
-                            and origin.get("crate_version") == runtime_version
+                            and origin.get("crate_version") == provenance_release_version(runtime_version)
                         ):
                             provenance_enrichments.append(case_id)
                         continue

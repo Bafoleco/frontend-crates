@@ -1573,11 +1573,26 @@ def test_schema_v3_origin_only_change_inherits_without_a_checkpoint(tmp_path):
     assert inherited["inherited_from"] == "0.5.0"
     assert inherited["captured_with"] == {"dynamo_v2": "0.5.0"}
 @pytest.mark.parametrize("version", ["0.5.1.patch1", "0.5.1+source." + "a" * 64])
-def test_history_rejects_patch_and_source_qualified_filenames(tmp_path, version):
+def test_history_rejects_patch_and_unbound_source_filenames(tmp_path, version):
     _write_family(tmp_path)
     _write_capture(tmp_path, version, {"text_only": _change()})
 
-    with pytest.raises(ValueError, match="capture identity differs"):
+    with pytest.raises(ValueError, match="capture identity differs|qualified capture identity requires captured origin"):
+        unified_history.load_store(tmp_path)
+
+
+def test_source_qualified_capture_requires_matching_origin(tmp_path):
+    _write_family(tmp_path)
+    version = "0.5.1+source." + "a" * 64
+    path = _write_capture(tmp_path, version, {"text_only": _change()}, provenance={
+        "status":"captured", "origin":{"crate_version":"0.5.1","source_sha256":"a"*64}
+    })
+    owner = unified_history.load_store(tmp_path).histories[("gemma4","dynamo_v2")]
+    assert owner.captures[path.stem]["runtime_version"] == version
+    document = unified_history.load_yaml(path)
+    document["provenance"]["origin"]["source_sha256"] = "b" * 64
+    path.write_text(unified_history.dump_yaml(document))
+    with pytest.raises(ValueError, match="differs from source identity"):
         unified_history.load_store(tmp_path)
 
 

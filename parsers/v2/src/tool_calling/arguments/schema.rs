@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use serde_json::Value;
+pub(crate) mod types;
 
 // Bound graph traversal as well as recursion: shared references can expand
 // exponentially even when there are no cycles. Exhaustion preserves untyped output.
@@ -292,7 +293,12 @@ impl<'a> SchemaFacts<'a> {
     // A string literal branch such as `const: "auto"` must not hide a numeric
     // alternative when the input is "42". Only reject known type/literal
     // contradictions here; this coercion helper is not a schema validator.
-    pub(crate) fn rejects_string_literal(&mut self, schema: &'a Value, raw: &str) -> bool {
+    pub(crate) fn rejects_string_literal(
+        &mut self,
+        schema: &'a Value,
+        raw: &str,
+        match_enum: bool,
+    ) -> bool {
         self.with_schema(schema, false, |walker, schema| {
             if schema == &Value::Bool(false) {
                 return true;
@@ -305,16 +311,19 @@ impl<'a> SchemaFacts<'a> {
             }) || schema
                 .get("const")
                 .is_some_and(|value| value.as_str() != Some(raw))
-                || schema
-                    .get("enum")
-                    .and_then(Value::as_array)
-                    .is_some_and(|values| !values.iter().any(|value| value.as_str() == Some(raw)))
+                || match_enum
+                    && schema
+                        .get("enum")
+                        .and_then(Value::as_array)
+                        .is_some_and(|values| {
+                            !values.iter().any(|value| value.as_str() == Some(raw))
+                        })
             {
                 return true;
             }
             if let Some(reference) = schema.get("$ref").and_then(Value::as_str)
                 && let Some(target) = resolve_local_schema_ref(reference, walker.root)
-                && walker.rejects_string_literal(target, raw)
+                && walker.rejects_string_literal(target, raw, match_enum)
             {
                 return true;
             }
@@ -323,11 +332,11 @@ impl<'a> SchemaFacts<'a> {
                     let rejected = if keyword == "allOf" {
                         branches
                             .iter()
-                            .any(|branch| walker.rejects_string_literal(branch, raw))
+                            .any(|branch| walker.rejects_string_literal(branch, raw, match_enum))
                     } else {
                         branches
                             .iter()
-                            .all(|branch| walker.rejects_string_literal(branch, raw))
+                            .all(|branch| walker.rejects_string_literal(branch, raw, match_enum))
                     };
                     if rejected {
                         return true;
@@ -346,91 +355,19 @@ impl<'a> SchemaFacts<'a> {
         expected: &str,
         infer_literals: bool,
     ) -> Option<bool> {
-        self.with_schema(schema, None, |walker, schema| {
-            if schema == &Value::Bool(false) {
-                return Some(false);
-            }
-            let matches =
-                |name: &str| name == expected || (name == "number" && expected == "integer");
-            let mut constraint = schema.get("type").and_then(|ty| {
-                ty.as_str().map(matches).or_else(|| {
-                    ty.as_array()
-                        .map(|types| types.iter().filter_map(Value::as_str).any(matches))
-                })
-            });
-            // A reference and its sibling constraints apply together. Keep the
-            // sibling node intact and intersect the target's facts with it.
-            if let Some(reference) = schema.get("$ref").and_then(Value::as_str)
-                && let Some(target) = resolve_local_schema_ref(reference, walker.root)
-                && let Some(permits) = walker.type_constraint(target, expected, infer_literals)
-            {
-                constraint = Some(constraint.unwrap_or(true) && permits);
-            }
-            // A plain negated type can exclude strings without declaring a
-            // positive type. More complex negations do not supply a safe hint.
-            if expected != "enum"
-                && let Some(negated) = schema.get("not").and_then(Value::as_object)
-                && negated.keys().all(|key| {
-                    matches!(
-                        key.as_str(),
-                        "type" | "title" | "description" | "default" | "examples" | "$comment"
-                    )
-                })
-                && let Some(ty) = negated.get("type")
-                && let Some(excluded) = ty.as_str().map(matches).or_else(|| {
-                    ty.as_array()
-                        .map(|types| types.iter().filter_map(Value::as_str).any(matches))
-                })
-            {
-                constraint = Some(constraint.unwrap_or(true) && !excluded);
-            }
-            // Literal constraints can establish a type even without `type`.
-            // Intersect them with explicit types so an enum cannot widen a
-            // sibling constraint. Ambiguous unions still preserve strings.
-            let literal_matches = |value: &Value| match expected {
-                "string" => value.is_string(),
-                "boolean" => value.is_boolean(),
-                "null" => value.is_null(),
-                "object" => value.is_object(),
-                "array" => value.is_array(),
-                "number" => value.is_number(),
-                "integer" => {
-                    value.is_i64()
-                        || value.is_u64()
-                        || value.as_f64().is_some_and(|number| number.fract() == 0.0)
-                }
-                _ => false,
-            };
-            if infer_literals && let Some(value) = schema.get("const") {
-                constraint = Some(constraint.unwrap_or(true) && literal_matches(value));
-            }
-            if infer_literals && let Some(values) = schema.get("enum").and_then(Value::as_array) {
-                constraint = Some(constraint.unwrap_or(true) && values.iter().any(literal_matches));
-            }
-            for key in ["anyOf", "oneOf"] {
-                if let Some(options) = schema.get(key).and_then(Value::as_array) {
-                    // Branches without known type constraints supply no hint.
-                    if let Some(permits) = options
-                        .iter()
-                        .filter_map(|option| {
-                            walker.type_constraint(option, expected, infer_literals)
-                        })
-                        .reduce(|left, right| left || right)
-                    {
-                        constraint = Some(constraint.unwrap_or(true) && permits);
-                    }
-                }
-            }
-            if let Some(branches) = schema.get("allOf").and_then(Value::as_array) {
-                for branch in branches {
-                    if let Some(permits) = walker.type_constraint(branch, expected, infer_literals)
-                    {
-                        constraint = Some(constraint.unwrap_or(true) && permits);
-                    }
-                }
-            }
-            constraint
-        })
+        let result = types::type_hint(
+            self.root,
+            schema,
+            expected,
+            if infer_literals {
+                types::LiteralTypes::All
+            } else {
+                types::LiteralTypes::None
+            },
+            &mut self.remaining_work,
+        );
+        self.exhausted |= self.remaining_work == 0;
+        result
     }
 
     // Reads only explicit `type` names, so an alias such as `type: "enum"` is visible.
@@ -844,6 +781,24 @@ impl<'a> NullSchemaWalker<'a> {
             let not_match = self.matches(not, ref_depth, depth + 1, scoped);
             permits = intersect_null_matches(permits, not_match.map(|matches| !matches));
         }
+        if let Some(condition) = schema.get("if") {
+            let condition = self.matches(condition, ref_depth, depth + 1, scoped);
+            let mut branch = |key| {
+                schema.get(key).map_or(Some(true), |branch| {
+                    self.matches(branch, ref_depth, depth + 1, scoped)
+                })
+            };
+            let outcome = match condition {
+                Some(true) => branch("then"),
+                Some(false) => branch("else"),
+                None => {
+                    let left = branch("then");
+                    let right = branch("else");
+                    if left == right { left } else { None }
+                }
+            };
+            permits = intersect_null_matches(permits, outcome);
+        }
         permits
     }
 }
@@ -863,66 +818,35 @@ pub(crate) fn schema_type_match(
     depth: usize,
     remaining: &mut usize,
 ) -> Option<bool> {
-    // A branching reference cycle can expand exponentially even at bounded depth.
-    *remaining = remaining.checked_sub(1)?;
-    // Local references are common in strict tool schemas. Limit traversal so a
-    // cyclic definition cannot recurse indefinitely while deciding a type hint.
-    if depth > 16
-        || schema.get("$dynamicRef").is_some()
-        || schema.get("$recursiveRef").is_some()
-        || (schema.get("$id").is_some() && !std::ptr::eq(schema, root))
-    {
+    if depth > 16 {
         return None;
     }
-    let reference_hint = schema
-        .get("$ref")
-        .and_then(Value::as_str)
-        .and_then(|reference| resolve_local_schema_ref(reference, root))
-        .and_then(|target| schema_type_match(root, target, expected, raw, depth + 1, remaining));
-    let matches = |ty: &Value| {
-        ty.as_str() == Some(expected) || (expected == "integer" && ty.as_str() == Some("number"))
-    };
-    let mut hint = schema.get("type").map(|ty| {
-        ty.as_array()
-            .map_or_else(|| matches(ty), |types| types.iter().any(matches))
-    });
-    // A string constant preserves literal XML text only when this value
-    // matches it. Otherwise a union's numeric/structured alternative must
-    // remain available. Intersect with types, refs, and composition siblings.
-    if expected == "string"
-        && let Some(value) = schema.get("const")
+    let hint = types::type_hint(
+        root,
+        schema,
+        expected,
+        types::LiteralTypes::Constants,
+        remaining,
+    );
+    if types::categorize_type(expected) == Some(types::SchemaType::Number)
+        && super::coerce_integral_number(raw.trim()).is_some()
     {
-        hint = Some(hint.unwrap_or(true) && value.as_str() == Some(raw));
+        return types::type_hint(
+            root,
+            schema,
+            "integer",
+            types::LiteralTypes::Constants,
+            remaining,
+        );
     }
-    // Modern JSON Schema applies $ref siblings as additional constraints.
-    hint = match (hint, reference_hint) {
-        (Some(left), Some(right)) => Some(left && right),
-        (left, right) => left.or(right),
-    };
-    for keyword in ["anyOf", "oneOf", "allOf"] {
-        let Some(options) = schema.get(keyword).and_then(Value::as_array) else {
-            continue;
-        };
-        let branches = options
-            .iter()
-            .map(|option| schema_type_match(root, option, expected, raw, depth, remaining));
-        let branch_hint = if keyword == "allOf" {
-            branches.flatten().reduce(|left, right| left && right)
-        } else {
-            branches
-                .reduce(|left, right| match (left, right) {
-                    (Some(true), _) | (_, Some(true)) => Some(true),
-                    (Some(false), Some(false)) => Some(false),
-                    _ => None,
-                })
-                .flatten()
-        };
-        hint = match (hint, branch_hint) {
-            (Some(left), Some(right)) => Some(left && right),
-            (left, right) => left.or(right),
-        };
+    if expected == "string"
+        && hint == Some(true)
+        && SchemaFacts::new(root).rejects_string_literal(schema, raw, false)
+    {
+        Some(false)
+    } else {
+        hint
     }
-    hint
 }
 
 #[cfg(test)]

@@ -458,7 +458,7 @@ const { FixtureResources } = await import('./resources.js');
 const { buildPage, buildTab, pageMetadata } = await import('./presentation.js');
 
 const { tabCandidates, selectedUnifiedFamilies } = await import('./model.js');
-const { classifyUnified, compareLegacyVersions, resolveUnified } = await import('./model.js');
+const { classifyUnified, compareLegacyVersions, compareVersions, resolveUnified } = await import('./model.js');
 const { leafCells } = await import('./model.js');
 const { columnKeysFor, tabPresentation } = await import('./presentation.js');
 const { sameValue } = await import('./values.js');
@@ -518,9 +518,10 @@ function validateTab(tab, loadedKeys = null) {
     assert.ok(descriptor.source.version);
     const owner = `${descriptor.source.implementation}@${descriptor.source.mode}`;
     const prior = sources.get(owner);
-    if (prior) assert.ok(compareLegacyVersions(prior, descriptor.source.version) >= 0);
+    if (prior) assert.ok(compareVersions(prior, descriptor.source.version) >= 0);
     sources.set(owner, descriptor.source.version);
-    assert.ok(!descriptor.control.label.includes('+source.'));
+    assert.ok(descriptor.control.label.includes(descriptor.source.version));
+    assert.equal(descriptor.control.label.includes('+source.'), descriptor.source.version.includes('+source.'));
     if (spec.mode === 'stream') assert.ok(!descriptor.source.version.match(/\.patch\d+$/));
   }
   for (const column of tab.columns) {

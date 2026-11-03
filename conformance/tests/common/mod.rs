@@ -636,11 +636,51 @@ pub fn version_dirs_ascending(root: &Path, prefix: &str) -> Vec<PathBuf> {
 pub fn latest_recorded_capture_dir(root: &Path, prefix: &str) -> Option<PathBuf> {
     version_dirs_ascending(root, prefix)
         .into_iter()
-        .rfind(|path| !path.to_string_lossy().contains('+'))
+        .rfind(|path| recorded_capture_identity(path))
 }
 
-/// The normal capture history plus one caller-selected current capture. `+tag`
-/// directories remain historical unless a test names the exact directory it needs.
+fn recorded_capture_identity(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if !name.contains('+') {
+        return true;
+    }
+    let Some((stem, source)) = name.split_once("+source.") else {
+        return false;
+    };
+    if stem.contains('+')
+        || source.len() != 64
+        || !source
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return false;
+    }
+    let Some((_, version)) = stem.split_once('-') else {
+        return false;
+    };
+    let (release, prerelease) = version
+        .split_once('-')
+        .map_or((version, None), |(release, pre)| (release, Some(pre)));
+    let (release, post) = release
+        .split_once(".post")
+        .map_or((release, None), |(release, post)| (release, Some(post)));
+    let digits = |value: &str| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit());
+    release.split('.').count() >= 3
+        && release.split('.').all(digits)
+        && post.is_none_or(digits)
+        && !(post.is_some() && prerelease.is_some())
+        && prerelease.is_none_or(|value| {
+            !value.is_empty()
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+        })
+}
+
+/// The recorded history plus one caller-selected current capture. Display-only
+/// `+tag` directories require an explicit selection; source qualifiers are evidence.
 pub fn version_dirs_ascending_with_current(
     root: &Path,
     prefix: &str,
@@ -671,7 +711,27 @@ fn version_dirs_with_identity_command(
         );
         let label = String::from_utf8(output.stdout).expect("capture label UTF-8");
         let resolved = format!("{prefix}{}", label.trim());
-        root.join(resolved)
+        let plain = root.join(resolved);
+        if plain.is_dir() {
+            plain
+        } else {
+            let output = command
+                .args(["--format", "json"])
+                .env_remove("CONFORMANCE_DYNAMO_V2_LABEL")
+                .output()
+                .expect("read qualified current capture identity");
+            assert!(
+                output.status.success(),
+                "qualified capture lookup failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let identity: serde_json::Value =
+                serde_json::from_slice(&output.stdout).expect("qualified capture identity JSON");
+            root.join(format!(
+                "{prefix}{}",
+                identity["label"].as_str().expect("qualified capture label")
+            ))
+        }
     } else {
         root.join(current_dir)
     };
@@ -683,7 +743,7 @@ fn version_dirs_with_identity_command(
     );
     let mut dirs = version_dirs_ascending(root, prefix)
         .into_iter()
-        .filter(|path| path != &current && !path.to_string_lossy().contains('+'))
+        .filter(|path| path != &current && recorded_capture_identity(path))
         .collect::<Vec<_>>();
     dirs.push(current);
     dirs
@@ -757,6 +817,30 @@ mod capture_selector_tests {
 
     fn write_capture(dir: &Path, provenance: &serde_json::Value) {
         write_capture_with_record(dir, provenance, serde_json::json!({}));
+    }
+
+    #[test]
+    fn recorded_source_identities_reject_malformed_release_and_qualifiers() {
+        let digest = "a".repeat(64);
+        for version in ["0.9.7", "0.9.7-rc.1", "0.9.7.post1"] {
+            assert!(recorded_capture_identity(Path::new(&format!(
+                "dynamo_v2-{version}+source.{digest}"
+            ))));
+        }
+        for version in [
+            "0.9.7+other",
+            "bad",
+            "0.9",
+            "0.9.7.post",
+            "0.9.7.post1-rc.1",
+        ] {
+            assert!(!recorded_capture_identity(Path::new(&format!(
+                "dynamo_v2-{version}+source.{digest}"
+            ))));
+        }
+        assert!(!recorded_capture_identity(Path::new(
+            "dynamo_v2-0.9.7+source.a"
+        )));
     }
 
     #[test]
@@ -847,6 +931,21 @@ mod capture_selector_tests {
             std::process::Command::new("this-command-must-not-run"),
         );
         assert_eq!(stream_dirs.last(), Some(&stream));
+        let output = checker(&clone).args(["--format", "json"]).output().unwrap();
+        assert!(output.status.success());
+        let identity: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let only_qualified = scratch.join("qualified-only");
+        let qualified =
+            only_qualified.join(format!("dynamo_v2-{}", identity["label"].as_str().unwrap()));
+        write_capture(&qualified, &identity);
+        assert_eq!(
+            select(&only_qualified, &clone, None).last(),
+            Some(&qualified)
+        );
+        assert_eq!(
+            latest_recorded_capture_dir(&only_qualified, "dynamo_v2-"),
+            Some(qualified)
+        );
     }
 }
 

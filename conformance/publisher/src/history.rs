@@ -47,11 +47,18 @@ static VERSION: LazyLock<Regex> = LazyLock::new(|| {
 
 /// Matches the maintained reader's numeric tuple, prerelease, stable, post order.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub struct Release(Vec<BigInt>, u8, String, BigInt);
+pub struct Release(Vec<BigInt>, u8, String, BigInt, String);
 
 impl Release {
     /// Frozen record provenance may retain a source-qualified identity.
     pub fn parse_provenance(version: &str) -> Result<Self> {
+        let mut release = Self::parse(version)?;
+        release.4.clear();
+        Ok(release)
+    }
+
+    /// Parse a capture identity, ordering source qualifiers by their underlying release.
+    pub fn parse(version: &str) -> Result<Self> {
         let release = if let Some((release, source)) = version.split_once("+source.") {
             ensure!(
                 source.len() == 64
@@ -64,18 +71,13 @@ impl Release {
         } else {
             version
         };
-        Self::parse(release)
-    }
-
-    /// Parse a capture version without imposing SemVer's three-component limit.
-    pub fn parse(version: &str) -> Result<Self> {
         ensure!(
-            VERSION.is_match(version),
+            VERSION.is_match(release),
             "invalid Unified capture version: {version}"
         );
-        let (release, prerelease) = version
+        let (release, prerelease) = release
             .split_once('-')
-            .map_or((version, None), |(a, b)| (a, Some(b)));
+            .map_or((release, None), |(a, b)| (a, Some(b)));
         let (release, post) = release
             .split_once(".post")
             .map_or((release, None), |(a, b)| (a, Some(b)));
@@ -94,6 +96,10 @@ impl Release {
             },
             prerelease.unwrap_or("").into(),
             post.unwrap_or("0").parse()?,
+            version
+                .split_once("+source.")
+                .map_or("", |(_, source)| source)
+                .into(),
         ))
     }
 }
@@ -853,7 +859,12 @@ receipts: {{{digest}: [a]}}
             Release::parse_provenance(&qualified)?,
             Release::parse("0.7.25")?
         );
-        assert!(Release::parse(&qualified).is_err());
+        assert!(Release::parse(&qualified)? > Release::parse("0.7.25")?);
+        assert!(Release::parse(&qualified)? < Release::parse("0.7.26")?);
+        assert!(
+            Release::parse(&qualified)?
+                < Release::parse(&format!("0.7.25+source.{}", "b".repeat(64)))?
+        );
         for bad in ["0.7.25+source.a", "0.7.25+other.abc", "0.7.25+source./bad"] {
             assert!(Release::parse_provenance(bad).is_err());
         }

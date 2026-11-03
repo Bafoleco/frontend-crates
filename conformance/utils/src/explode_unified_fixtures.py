@@ -176,8 +176,8 @@ def _clear_generated_dirs():
 
 
 def _canonical_dynamo_capture_version(provenance):
-    """Use the semantic crate version as the only Dynamo capture filename."""
-    return provenance["crate_version"]
+    """Keep the verified producer identity, including unpublished source qualifiers."""
+    return provenance["label"]
 
 
 def _request_stimulus(record, *, keep_finish_chunk):
@@ -315,7 +315,7 @@ def main():
         "vllm_python": caps["vllm_python"].get("vllm_version") or "0.25.x",
         "vllm_rust": caps["vllm_rust"].get("vllm_rust_version") or "0.25.x",
         "sglang_python": caps["sglang_python"].get("sglang_version") or "0.5.x",
-        "dynamo_v2": _canonical_dynamo_capture_version(provenance),
+        "dynamo_v2": _canonical_dynamo_capture_version(feed["capture_provenance"]),
     }
 
     # A version dir is written once; accumulate cases into per-(dir, family) docs.
@@ -368,6 +368,11 @@ def main():
 
         if c.get("dynamo_error"):
             slot(ddir, fam)[key] = {"capture_input": request, "error": c["dynamo_error"]}
+
+        if "parser_path" in c:
+            if c["parser_path"] not in {"unified", "split"}:
+                raise ValueError("invalid Dynamo capture parser path")
+            slot(ddir, fam)[key]["parser_path"] = c["parser_path"]
 
         # peer engine overlays
         for impl in ("vllm_python", "vllm_rust", "sglang_python"):

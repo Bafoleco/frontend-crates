@@ -14,6 +14,8 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 import explode_unified_fixtures as explode  # noqa: E402
+from capture_versions import capture_release_sort_key, provenance_release_version
+from unified_history import CAPTURE_DIRECTORY_RE
 
 
 def test_peer_error_wins_over_partial_output() -> None:
@@ -261,3 +263,15 @@ def test_historical_finish_chunk_ignores_retired_cases_without_request(tmp_path,
         assert explode._historical_finish_chunk("gpt_oss", "new_case") is True
     finally:
         explode._historical_finish_chunks.cache_clear()
+
+
+def test_current_capture_retains_qualified_source_identity():
+    label = "0.9.7+source." + "a" * 64
+    assert CAPTURE_DIRECTORY_RE.fullmatch("dynamo_v2-" + label)
+    assert capture_release_sort_key("0.9.7") < capture_release_sort_key(label) < capture_release_sort_key("0.9.8")
+    assert capture_release_sort_key(label) < capture_release_sort_key("0.9.7+source." + "b" * 64)
+    assert provenance_release_version(label) == "0.9.7"
+    assert explode._canonical_dynamo_capture_version({"label": label}) == label
+    for invalid in ["0.9.7+source.a", "0.9.7+other." + "a" * 64]:
+        with pytest.raises(ValueError):
+            capture_release_sort_key(invalid)

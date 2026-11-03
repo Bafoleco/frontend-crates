@@ -1256,7 +1256,7 @@ def test_reference_backfills_require_request_bound_version_receipts(authored_uni
         if family.name == "qwen3":
             introduced.add(numbered_id("arg_string_null_ref"))
         introduced_at = (0, 7, 29) if family.name == "beam" else (0, 7, 18)
-        if tuple(int(part) for part in version.split(".")) >= introduced_at:
+        if unified_history._capture_release_sort_key(version)[0] >= introduced_at:
             measured = {family.cases[key]["display_id"] for key in document["records"]}
             missing = introduced - measured
             if missing:

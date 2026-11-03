@@ -384,29 +384,33 @@ export function selectedCaptureOutcome(cell, key, reference = 'golden') {
   return intentional ? 'documented' : 'diverge';
 }
 
-export const unifiedCaptureVersionPattern = /^\d+(?:\.\d+){2,}(?:\.post\d+|-[0-9A-Za-z.-]+)?$/;
+const unifiedReleaseVersionPattern = /^\d+(?:\.\d+){2,}(?:\.post\d+|-[0-9A-Za-z.-]+)?$/;
+export const unifiedCaptureVersionPattern = /^\d+(?:\.\d+){2,}(?:\.post\d+|-[0-9A-Za-z.-]+)?(?:\+source\.[0-9a-f]{64})?$/;
 
 export function provenanceReleaseVersion(version) {
   if (typeof version !== 'string') throw new Error('invalid provenance version');
   const release = version.replace(/\+source\.[0-9a-f]{64}$/, '');
-  if (!unifiedCaptureVersionPattern.test(release)) throw new Error('invalid provenance version');
+  if (!unifiedReleaseVersionPattern.test(release)) throw new Error('invalid provenance version');
   return release;
 }
 
 export function compareVersions(left, right) {
+  for (const value of [left, right]) {
+    if (String(value).includes('+') && !unifiedCaptureVersionPattern.test(String(value))) throw new Error(`invalid capture version: ${value}`);
+  }
   if ([left, right].some((value) => !String(value).includes('-') && /\.patch\d+$/.test(value))) return compareLegacyVersions(left, right);
   const key = (value) => {
-    const match = String(value).match(/^(\d+(?:\.\d+)*)(?:\.post(\d+)|-([0-9A-Za-z.-]+)|((?:a|b|rc|alpha|beta|dev)\d*))?$/);
+    const match = String(value).replace(/\+source\.[0-9a-f]{64}$/, '').match(/^(\d+(?:\.\d+)*)(?:\.post(\d+)|-([0-9A-Za-z.-]+)|((?:a|b|rc|alpha|beta|dev)\d*))?$/);
     if (!match) throw new Error(`invalid capture version: ${value}`);
     const prerelease = match[3] || match[4] || null;
-    return [match[1].split('.').map(BigInt), match[2] !== undefined ? 2 : prerelease === null ? 1 : 0, match[2] !== undefined ? BigInt(match[2]) : prerelease];
+    return [match[1].split('.').map(BigInt), match[2] !== undefined ? 2 : prerelease === null ? 1 : 0, match[2] !== undefined ? BigInt(match[2]) : prerelease, String(value).match(/\+source\.([0-9a-f]{64})$/)?.[1] || ''];
   };
   const a = key(left), b = key(right);
   for (let i = 0; i < Math.max(a[0].length, b[0].length); i++) {
     const x = a[0][i] ?? 0n, y = b[0][i] ?? 0n;
     if (x !== y) return x < y ? -1 : 1;
   }
-  for (const index of [1, 2]) if (a[index] !== b[index]) return a[index] < b[index] ? -1 : 1;
+  for (const index of [1, 2, 3]) if (a[index] !== b[index]) return a[index] < b[index] ? -1 : 1;
   return 0;
 }
 export function compareLegacyVersions(left, right) {
